@@ -1,465 +1,510 @@
-# Implementing *The Case for Learned Index Structures* — an 8-Week Plan
+# Learned Index Structures — Project Plan
 
-Kraska, Beutel, Chi, Dean, Polyzotis — SIGMOD'18.
-Working directory: `/home/nischal/Desktop/cs631/learned index/` (currently: the PDF only).
-**Everything is built from scratch.** No existing code is reused.
-**Two people**, ~12–18 hrs/week each, run as two parallel lanes.
+CS631 course project. Implementation of Kraska, Beutel, Chi, Dean and Polyzotis,
+*The Case for Learned Index Structures*, SIGMOD 2018.
+
+Team of two. Roughly 12–18 hours per week each, over 8 weeks.
+All code written from scratch in C++17, with Python used only for model training.
 
 ---
 
-## Context
+## 1. What the paper says
 
-### What the paper actually claims
+The paper's central observation is in §2.2. A range index takes a key and returns the
+position of the corresponding record in a sorted array. That is exactly what a
+cumulative distribution function does, scaled by the number of records:
 
-One idea, applied three times. §2.2: **a range index is a model of the CDF** —
-`pos = F(key) · N`. A B-Tree "learns" that CDF as a regression tree; anything else
-that approximates the same function is also an index. From that:
+    pos = F(key) · N
 
-| § | Index family | Classical | Learned replacement | Headline result |
+So an index *is* a model of the data distribution. A B-Tree learns that distribution as
+a regression tree; but any function approximator that fits the same CDF can serve the
+same purpose, and may do so in far less space.
+
+From this one idea the authors derive learned replacements for all three index families
+used in a DBMS:
+
+| § | Index type | Traditional structure | Learned version | Reported result |
 |---|---|---|---|---|
-| 3 | **Range** | B-Tree | Recursive Model Index (RMI) | 1.5–3× faster, up to 2 orders of magnitude smaller |
-| 4 | **Point** | Hash map | `h(K) = F(K)·M` | up to 77% fewer conflicts |
-| 5 | **Existence** | Bloom filter | classifier + overflow filter | 36% memory saving at 1% FPR |
+| 3 | Range | B-Tree | Recursive Model Index (RMI) | 1.5–3× faster, up to 2 orders of magnitude smaller |
+| 4 | Point | Hash map | `h(K) = F(K)·M` | up to 77% fewer conflicts |
+| 5 | Existence | Bloom filter | classifier + overflow filter | 36% less memory at 1% FPR |
 
-§3 carries the weight; §4 and §5 reuse its machinery — which is why the RMI must be
-built as a *reusable CDF model*, not as a monolithic index. Get that interface wrong
-in Week 3 and Weeks 6–7 cost double.
+### The RMI (§3.2)
 
-The paper's own honest limits — no inserts/updates (Appendix D.2), no
-multi-threading, no end-to-end training, GPU/TPU only speculative — are also the
-boundary of this project. Read-only, single-threaded, CPU.
+Predicting a position to within ±100 out of 100M records with a single model is hard.
+Going from 100M down to ±10k is easy, and then from ±10k down to ±100 is also easy,
+because the second model only has to fit a small slice of the data. The RMI exploits
+this: stage 1 takes the key and picks one of K stage-2 models; that model predicts the
+final position. There is no search between the stages — stage 1's output directly
+indexes into the stage-2 array.
 
-### The three ideas that make the RMI work, and where each can break
+### Guaranteed correctness (§3.3, §3.4)
 
-1. **Staging (§3.2).** Getting from 100M to ±100 with one model is hard; getting
-   from 100M to ±10k, then ±10k to ±100, is easy. Stage 1 picks an expert, stage 2
-   predicts. There is no search *between* stages — stage 1's output directly indexes
-   stage 2. That is the whole trick.
-2. **Per-model min/max error (§3.3, §3.4).** Each last-stage model stores the worst
-   over- and under-prediction *over its own keys*, so lookup searches a bounded
-   window. This is what turns "probably close" into **guaranteed zero false
-   negatives** — and it is where sign errors and floating-point drift silently
-   destroy correctness.
-3. **Hybrid fallback (§3.3, Algorithm 1).** Any last-stage model whose max error
-   exceeds a threshold is replaced by a B-Tree over its keys. This bounds worst-case
-   performance to a B-Tree's: pathological data degenerates, never loses.
+A model prediction alone is not an index, because it can be wrong. The paper's solution
+is that each last-stage model records its worst over-prediction and worst
+under-prediction *over the keys it owns*, computed at build time. A lookup then searches
+only the window bounded by those two errors. This is what makes the structure exact
+rather than approximate: recall is 100% by construction, not by luck.
 
-### Feasibility — the honest verdict
+### Hybrid fallback (§3.3)
 
-**Two people at 12–18 hrs/week each ≈ 160–230 effective hours** (coordination loss is
-real; a pair is ~1.6×, not 2×). Estimated cost of the full scope after the Tier-1 cuts
-below: **~110–160 hours**. So it fits, with genuine slack — but only by exploiting a
-structural fact:
-
-> **The B-Tree, the RMI, and the Bloom filter are mutually independent.** Only §4
-> (learned hash) truly depends on §3. Everything else can run in parallel lanes.
-
-Run this as two lanes, not eight sequential weeks. Sequential, this project does not
-fit; parallel, it fits with a buffer week.
-
-**Already cut** (no argument lost): the TensorFlow-slowness demo · FAST baseline
-(third-party SIMD integration, and the paper concedes FAST is not significantly
-faster) · string keys §3.5 (a whole separate tokenization + model pipeline, and the
-paper's own speedups there are "not as prominent") · N=200M runs (100M exhibits every
-effect; 200M only costs RAM and wall clock) · model-hash Bloom filters §5.1.2.
-
-**Demoted to stretch:** neural-net stage-1 models. Multivariate linear regression with
-automatic feature engineering is the *primary* path — it is what the paper's own
-Figure-5 "learned index without overhead" configuration actually uses, it still fixes
-the lognormal sigmoid problem, and it removes PyTorch, weight export, C++ NN inference,
-and an expensive grid search from the critical path.
+Algorithm 1 in the paper replaces any last-stage model whose maximum error exceeds a
+threshold with a B-Tree over that model's keys. This bounds worst-case performance: on
+data that is genuinely hard to learn, the structure degrades into a B-Tree rather than
+becoming slower than one.
 
 ---
 
-## The collaboration protocol
+## 2. Objective and scope
 
-Six rules we set for working with AI agents on this project, made operational below.
-Each week names one **dominant** rule matched to the character of that week's work;
-Rule 5 (constrain format) applies to every prompt, and Rule 6 (post-mortem) closes
-every week. "I"/"me" in the sample prompts refers to the agent.
+We want to reproduce the paper's core claims on our own hardware, with our own
+implementation, and report honestly where our numbers differ from theirs.
 
-| # | Rule | What it means in practice here |
+**We will implement:**
+
+- A read-optimised B-Tree baseline (§3.7.1), which every other result is measured against
+- A two-stage RMI with per-model error bounds (§3.2, §3.4)
+- Hybrid indexes with B-Tree fallback (§3.3)
+- Three search strategies: model-biased binary, biased quaternary, exponential (§3.4)
+- The hash-model index and its conflict-rate evaluation (§4)
+- A learned Bloom filter with an overflow filter (§5.1)
+- The alternative baselines from Figure 5: a 3-stage lookup table and a fixed-height
+  B-Tree with interpolation search
+
+**We will not implement, and will say so in the report:**
+
+| Left out | Reason |
+|---|---|
+| Inserts, updates, deletes | The paper itself only handles read-only indexes; the discussion of writes is deferred to its Appendix D.2 |
+| String keys (§3.5) | Needs a separate tokenisation and model pipeline, and the paper's own speedups there are modest |
+| FAST | Third-party SIMD code; the paper reports it is not significantly faster anyway |
+| GPU/TPU execution | The paper's own experiments are CPU-only |
+| Multi-threading | Out of scope; all measurements single-threaded |
+| N = 200M | 100M already exhibits every effect we care about; 200M only costs RAM and wall-clock time |
+
+**Neural networks are a stretch goal, not the main path.** The paper trains small ReLU
+nets for stage 1, but its own Figure 5 configuration — the one labelled "learned index
+without overhead" — uses multivariate linear regression with automatic feature
+engineering instead. We will use that as our primary stage-1 model, since it is enough
+to fit a non-linear CDF and it keeps a machine learning framework off the critical path.
+If we are ahead of schedule we will add a small neural network, trained in PyTorch with
+its weights exported and the forward pass written by hand in C++. We will not call a
+framework at inference time under any circumstances — §2.3 of the paper measures that at
+roughly 80,000 ns per prediction against 300 ns for a B-Tree traversal, which is the
+entire reason their code-generation layer exists.
+
+---
+
+## 3. Datasets
+
+The paper uses two real datasets, Weblogs (200M web-server log timestamps) and Maps
+(200M OpenStreetMap longitudes). Neither is publicly available — both are internal to
+Google. We substitute datasets from the SOSD benchmark that have similar shape, and we
+will state this substitution clearly in the report rather than implying we used the
+originals.
+
+| Name | Definition | Purpose |
 |---|---|---|
-| 1 | **Solve first, verify second** | You write the derivation/code, *then* hand it over. Never ask "how do I…" for something the paper already answers — ask "here's mine, break it." |
-| 2 | **Make agents argue, not agree** | Prompt for attack, not review. "Find the flaw" beats "does this look right." Assign me a hostile role. |
-| 3 | **Options, not answers** | For design forks, demand N alternatives with trade-offs and *no* recommendation. You choose. |
-| 4 | **Reverse the roles** | Sometimes you're the reviewer and I'm the author. Sometimes you explain and I interrogate. |
-| 5 | **Constrain the output format** | Tables, fixed schemas, word caps, "no code", "one sentence per row". Vague prompt → vague answer. |
-| 6 | **Post-mortem** | End of week: what did I get wrong, what did you accept too fast, what would you prompt differently. |
+| `dense` | `0 .. N-1` | Sanity check. The CDF is perfectly linear, so any correct model must fit it exactly |
+| `lognormal` | lognormal(μ=0, σ=2), scaled to integers up to 1e9, deduplicated | The paper's synthetic heavy-tail dataset (§3.7.1) |
+| `wiki_ts` | SOSD Wikipedia edit timestamps | Stand-in for Weblogs. Timestamps carry awkward periodic structure, which is what made Weblogs the paper's worst case |
+| `osm_cellids` | SOSD OpenStreetMap cell IDs | Stand-in for Maps |
 
-**Standing weekly post-mortem** (Friday, 20 min), constrained to this format:
+Sizes: N ∈ {10M, 100M}. Keys are 64-bit, payloads are 64-bit.
 
-```
-Prompt me with, verbatim:
-"Week N post-mortem. Output exactly four sections, max 5 bullets each, no code:
- (1) Claims you made this week that turned out wrong.
- (2) Things I accepted from you without verifying — flag the risky ones.
- (3) Where I used you as an answer machine instead of a verifier.
- (4) One prompt I should have written differently, with the rewrite."
-```
+Generating 190M unique lognormal keys by drawing, sorting and deduplicating needs
+roughly 1.8 GB of intermediate memory. We will use a presence bitset over the value
+range instead, which is about 125 MB.
 
 ---
 
-## The two lanes
+## 4. Measurement methodology
 
-| | **Lane A — systems / C++** | **Lane B — models / ML** |
+Everything below is fixed in week 1 and not changed afterwards, because changing it
+mid-project invalidates earlier results.
+
+- Both structures compiled into the same binary with the same flags.
+- One lookup sample per (dataset, N) pair, shared by every index measured on it:
+  1M keys drawn from the dataset with replacement, then shuffled so there is no
+  sequential locality.
+- 1000 warm-up lookups per measurement, discarded.
+- Five repetitions; we report the median.
+- Every timed iteration writes to a `volatile` sink so nothing is optimised away.
+- Build and training time is never inside a timing loop; it is reported separately.
+- Fixed RNG seeds throughout, so every dataset and workload is reproducible.
+- Compiled with `-ffp-contract=off`. This matters — see week 2.
+
+Because the lookups in the timing loop are independent, the CPU overlaps their cache
+misses. These are therefore throughput numbers under memory-level parallelism, not
+isolated single-lookup latencies. That is a legitimate thing to measure and it is
+applied identically to every structure, but we will state it explicitly rather than
+letting a reader assume otherwise.
+
+We report, per configuration: index size in bytes, total lookup time in ns, model
+execution time in ns (the RMI's two-stage prediction, or the B-Tree's root-to-leaf
+descent), that time as a percentage of the total, and speedup and size ratio against a
+B-Tree with page size 128 — the paper's reference point.
+
+---
+
+## 5. Roadmap
+
+The B-Tree, the RMI and the Bloom filter do not depend on each other. Only the hash
+index (§4) genuinely needs a finished RMI. We therefore split into two workstreams after
+week 1 and rejoin in week 7.
+
+| Week | Workstream A (systems) | Workstream B (models) |
 |---|---|---|
-| W1 | *joint: foundations* | *joint: foundations* |
-| W2 | B-Tree baseline | RMI core |
-| W3 | *cross-review*, then search strategies | *cross-review*, then stage-1 models |
-| W4 | Hybrid indexes §3.3 + §3.4 | Stage-1 model quality, lognormal fix |
-| W5 | Learned hash §4 | Bloom filter track begins |
-| W6 | Figure-5 alt baselines | GRU + τ + overflow filter |
-| W7 | *joint: integration + full evaluation (buffer)* | |
-| W8 | *joint: report* | |
+| 1 | Foundations — joint | Foundations — joint |
+| 2 | B-Tree baseline | RMI core |
+| 3 | Cross-review, then search strategies | Cross-review, then stage-1 models |
+| 4 | Hybrid indexes | Model quality, lognormal fix |
+| 5 | Hash-model index | Bloom filter: classical baseline + data |
+| 6 | Figure 5 alternative baselines | Learned Bloom filter |
+| 7 | Integration and full evaluation — joint | |
+| 8 | Report — joint | |
 
-Assign lanes by taste, but **whoever does not build the RMI must still be able to
-derive its error bounds** — that is the viva question.
+Whoever does not write the RMI still needs to be able to derive its error bounds from
+scratch. We will swap workstreams for a session in week 4 to make sure neither of us
+only understands half the project.
 
 ---
 
-## Week 1 — Foundations *(joint — do not split this)*
+### Week 1 — Foundations (joint)
 
-**Paper:** §1, §2 (all), §3.1.
-**Ship:** repo + build, dataset generators, timing harness, correctness oracle, and the
-Figure-4 table skeleton with plain binary search as the only row filled in.
+Nothing is learned this week. We are building the instrument that every later number is
+measured with, and both of us need to own it because it is the interface the two
+workstreams meet at.
 
-Nothing is learned this week. You are building the instrument every later claim is
-measured with — if it is wrong, every number in Weeks 2–8 is wrong too. Both of you
-build it, because it is the contract the two lanes meet at.
+**Tasks**
+
+- Repository, build system, a `make` target that produces one benchmark binary
+- Dataset generation for all four datasets; SOSD loader
+- Timing harness implementing section 4 above
+- Correctness oracle: every key found at its exact position, sampled absent keys
+  correctly report not-found, run aborts on failure
+- Plain binary search and `std::lower_bound` as trivial baselines
+- CSV output with the column set listed in section 4
 
 **Problems to solve**
 
-* **Interface design — the decision that makes or breaks the parallel structure.** §4
-  needs the RMI as a *hash function*, §5 needs a model as a *classifier*, and Lane A
-  needs to benchmark structures it did not write. Fix the interfaces in Week 1 and the
-  lanes never block each other; get them wrong and every merge is a rewrite.
-* **Timing methodology.** Independent lookups in a timing loop let the CPU overlap cache
-  misses, so you measure *throughput under memory-level parallelism*, not single-lookup
-  latency. Both defensible; different numbers. Pick one, state it, apply it identically
-  to every structure.
-* **The real datasets don't exist publicly.** Weblogs (200M university web-log
-  timestamps) and Maps (200M OSM longitudes) are Google-internal. Find substitutes that
-  preserve the *claim*, not just the size — SOSD's `wiki_ts` for Weblogs (timestamps,
-  nasty temporal structure from class schedules, holidays, semester breaks: the paper's
-  stated worst case), `osm_cellids` for Maps. Say so in the report.
-* **Generating 190M unique lognormal(μ=0, σ=2) keys scaled to integers up to 1e9**
-  without a 1.8 GB draw-sort-dedupe pass. (A presence bitset over the value range is
-  ~125 MB.) Also build `dense` (`0..N-1`) as the sanity dataset — a perfectly linear CDF
-  that any correct model must fit exactly.
-* **Harness discipline, fixed now and never relaxed:** fixed seeds; 1M lookups sampled
-  with replacement then shuffled (kills sequential locality); warm-up discarded; median
-  of 5 reps; `volatile` sink; build/train time never inside a timed loop.
-* **Correctness oracle before any timing:** every key at its exact position; sampled
-  absent keys report not-found; the run aborts on failure.
-* N ∈ {10M, 100M}. Check the RAM budget for 100M now, not in Week 2.
-
-**Agent protocol — Rule 3 (options, not answers), then Rule 2**
-
-The interface is a real fork. Don't ask me to design it:
-
-> "Give me exactly 3 ways to structure a trained CDF model in C++ so the same object
-> serves as (a) a range index, (b) a hash function `F(K)·M`, and (c) a classifier
-> scorer. Format: one table, columns = design | how §4 reuses it | how §5 reuses it |
-> what it costs at inference | the thing that breaks later. ≤ 15 words per cell. No
-> code, no recommendation."
-
-Pick one between the two of you, then switch me to attack mode:
-
-> "We chose X. Give me the 3 strongest objections in order of severity, one sentence
-> each, then the single condition under which we should reverse the decision."
+- *Interface design.* Week 5 needs the RMI as a hash function and week 6 needs a model
+  as a classifier. We have to decide now how a trained CDF model is exposed, so that
+  neither workstream blocks the other and week 5 is not a rewrite.
+- *Throughput or latency.* We have to pick one and justify it, since they are different
+  numbers and the choice is not reversible without redoing everything.
+- *Dataset substitution.* Confirm that `wiki_ts` and `osm_cellids` really do have the CDF
+  characteristics we are claiming they have, rather than assuming it.
+- *Memory budget.* Check that 100M keys plus payload fits comfortably before week 2,
+  not during it.
 
 ---
 
-## Week 2 — Split: B-Tree baseline ∥ RMI core
+### Week 2 — B-Tree baseline and RMI core (split)
 
-The two hardest single pieces, built simultaneously against the Week-1 harness.
+#### Workstream A: the B-Tree
 
-### Lane A — the B-Tree baseline
+Every result in the paper is a ratio against a B-Tree with page size 128. If our
+baseline is weak, our speedups are meaningless. We build it as though we were trying to
+beat the RMI with it.
 
-**Paper:** §3.7.1, §2.1.
-**Ship:** B-Tree rows of Figure 4 — size MB, `lookup_ns`, `traverse_ns`, model %, page
-sizes 32/64/128/256/512, all datasets × N.
+**Tasks**
 
-Every result in this paper is a ratio against **B-Tree page=128**. A weak baseline
-invalidates the whole project and is the easiest way to accidentally cheat. Build it as
-if you were trying to beat the RMI.
+- Read-only, 100% fill factor, built bottom-up over the sorted array
+- Leaf level is the sorted array itself, no copy; the array is excluded from both
+  structures' reported size
+- One 64-byte-aligned dense key array per internal level
+- Page sizes 32, 64, 128, 256, 512, across all datasets and both N
+- Report lookup time, traversal-only time, size
 
-* **Should nodes store child pointers?** With fixed fanout and 100% fill,
-  `child(i,j) = i·P + j` — the layout is implicit and no pointers are needed. That makes
-  the baseline *smaller and faster*, the conservative choice on both axes. Storing
-  pointers would flatter your RMI. Do the hard thing.
-* Read-only, 100% fill, built bottom-up. The leaf level should *be* the sorted array —
-  no copy — and the array is excluded from both structures' reported size.
-* 64-byte-aligned dense key arrays per level; the same branch-free binary search
-  primitive Lane B uses, so no measured difference comes from the search code.
-* **Verify page=128 is actually optimal on your machine.** The paper picks it because it
-  wins for them. If 64 wins on your CPU, say so and report both reference points.
-* **Redo §2.1's budget calculation for your cache hierarchy.** A page traversal ≈ 50
-  cycles; a CPU does 8–16 SIMD ops/cycle; so a model gets ~400 arithmetic operations to
-  beat a 1/100 precision gain per node. This tells Lane B how complex a stage-1 model
-  they can afford — hand them the number.
+**Problems to solve**
 
-### Lane B — the RMI core
+- *Child pointers.* With a fixed fanout and 100% fill, the child of slot j in node i is
+  node `i·P + j` of the level below, so the layout is implicit and no pointers need to be
+  stored or dereferenced. This makes the baseline both smaller and faster than a
+  pointer-carrying layout — which is the conservative choice, since storing pointers
+  would inflate the baseline's size and slow its descent, flattering our RMI.
+- *Is page 128 actually optimal here?* The paper picks it because it wins on their
+  hardware. If a different page size wins on ours we report both reference points.
+- *Model complexity budget.* §2.1 argues that a B-Tree page traversal costs about 50
+  cycles and a modern CPU issues 8–16 SIMD operations per cycle, so a model has roughly
+  400 arithmetic operations available to beat a precision gain of 1/100 per node. We
+  redo this arithmetic for our own cache hierarchy, because it tells workstream B how
+  expensive a stage-1 model they can afford.
 
-**Paper:** §3.2, §3.4 (bounds), §3.6.
-**Ship:** 2-stage RMI, `K ∈ {10k, 50k, 100k, 200k}` (the paper's exact second-stage
-sizes), 100% recall at every config.
+#### Workstream B: the RMI
 
-* **Derive the search-bound sign convention yourself, from scratch, before writing
-  code.** If `error = predicted − actual`, then `actual = predicted − error`, so
-  `actual ∈ [pred − max_err, pred − min_err]` — it *subtracts*, and the bounds swap
-  roles. Define the convention once, in a comment, and make every call site obey it.
-  Getting it backwards produces false negatives *only on inexact models*, so it passes
-  on `dense` and fails silently everywhere else. Highest-value hour of the project.
-* **Floating-point determinism is load-bearing.** GCC defaults to `-ffp-contract=fast`
-  and may fuse `slope*key + intercept` into an FMA at one call site but not another.
-  Training then computes a different prediction than lookup, a stored bound is off by
-  one, and a key vanishes. Compile with `-ffp-contract=off`, in the build file, with a
-  comment saying why.
-* **Precision.** Keys reach 2^63 and N reaches 10^8; the uncentred normal equations lose
-  too much precision. Centred form, `long double` accumulators.
-* **Memory feasibility.** Stage 1 is monotone in the key and the input is sorted, so each
-  stage-2 model owns a *contiguous run* — partition in one pass storing run boundaries
-  rather than materialising a key vector per model.
-* **Degenerate models.** An empty bucket is reachable only by absent keys — decide what it
-  returns. A single-key bucket has `var_x = 0`, so the closed form degenerates to
-  `slope=0, intercept=pos`, which is exactly right. Convince yourself rather than
-  branching.
-* Closed-form least squares, single pass (§3.6) — no gradient descent in stage 2.
+**Tasks**
 
-**Agent protocol — Rule 1 (solve first, verify second), both lanes**
+- Two-stage RMI, K ∈ {10k, 50k, 100k, 200k} stage-2 models (the paper's values)
+- Closed-form least squares, single pass over the sorted data — no gradient descent
+- Per-model minimum and maximum error, computed at build time
+- Bounded search within the error window
+- 100% recall verified at every configuration
 
-Write the derivation and the code before you talk to me. Then:
+**Problems to solve**
 
-> "Here is my min/max-error derivation and my `search_bounds()` [paste]. Do not explain
-> the correct answer and do not rewrite my code. Instead: construct the smallest concrete
-> dataset and lookup key on which my version returns a false negative — or state 'no
-> counterexample found' and give the argument why. ≤ 150 words."
-
-Asking me to *produce a counterexample* rather than *check your work* is the whole
-difference between verification and outsourcing.
+- *The sign convention on the error bounds.* If error is defined as `predicted − actual`,
+  then `actual = predicted − error`, so the true position lies in
+  `[pred − max_err, pred − min_err]`. It subtracts, and the two bounds swap roles.
+  Getting this backwards produces false negatives only on models that are not exact,
+  which means it passes on `dense` and fails silently on everything else. We derive it
+  on paper before writing any code and fix the convention in one place.
+- *Floating-point determinism.* GCC defaults to `-ffp-contract=fast`, which may contract
+  `slope*key + intercept` into a fused multiply-add at one call site but not another.
+  Training would then compute a slightly different prediction than lookup does, a stored
+  error bound would be off by one, and a key would go missing. Hence `-ffp-contract=off`.
+- *Precision.* Keys reach 2^63 and N reaches 10^8, where the uncentred normal equations
+  lose too much precision. We use the centred form with `long double` accumulators.
+- *Memory during training.* Stage 1 is monotone in the key and the input is sorted, so
+  each stage-2 model owns a contiguous run of positions. We store run boundaries and
+  partition in a single pass, rather than materialising a key vector per model — the
+  latter does not fit at 100M.
+- *Degenerate models.* An empty bucket can only be reached by a key that is absent from
+  the dataset. A bucket with one key has zero variance in x, so the closed form
+  degenerates to slope 0 and intercept equal to that key's position, which is exactly
+  correct with no special case needed.
 
 ---
 
-## Week 3 — Cross-review, integrate, then diverge again
+### Week 3 — Cross-review, integration, search strategies
 
-**Ship:** the first real RMI-vs-B-Tree speedup and size table.
+Each of us spends the first two sessions attacking the structure the other one built,
+before we trust any number either of us produced. Then we integrate and produce the
+first real RMI-versus-B-Tree comparison table.
 
-**Rule 4 comes free this week — you have a human to reverse roles with.** Spend the
-first two sessions with each of you attacking the *other's* structure, using the hostile
-prompt below on code you did not write. This catches more than I will, because you each
-have to actually understand the other half.
+**Tasks**
 
-> "You are a SIGMOD reviewer who believes learned indexes only beat B-Trees because the
-> baselines are strawmen. Here is our B-Tree [paste]. List every way it is weaker than a
-> production B-Tree, ranked by how much it inflates our speedup. Table: weakness | est.
-> effect on our numbers | cost to fix. ≤ 20 words per cell. Do not compliment anything."
+- Cross-review both structures
+- Integrate into one benchmark binary with a shared lookup sample
+- First speedup and size-ratio table
+- Workstream A: implement model-biased binary search (first midpoint is the predicted
+  position), exponential search (needs no stored bounds), and biased quaternary search
+  (initial probes at `pos − σ`, `pos`, `pos + σ`, so the hardware prefetches all three)
+- Workstream B: begin stage-1 model work
 
-Then integrate and split again: **Lane A** → model-biased binary search, exponential
-search, biased quaternary search (three probes at `pos−σ, pos, pos+σ` so the hardware
-prefetches all three). **Lane B** → stage-1 model quality.
+**Problems to solve**
 
----
-
-## Week 4 — Hybrid indexes ∥ stage-1 model quality
-
-### Lane A — hybrid indexes and correct range semantics
-
-**Paper:** §3.3 (Algorithm 1), §3.4.
-
-* **Algorithm 1, faithfully.** Train stage-wise; then replace any last-stage model with
-  `max_abs_error > threshold` by a B-Tree over its keys (thresholds 128 and 64). Confirm
-  the guarantee: on adversarial data everything degenerates to a B-Tree and you are never
-  *worse*. This is one of the paper's best ideas and it is cheap once both structures exist.
-* **The monotonicity trap (§3.4) — the subtlest correctness problem in the paper.** Error
-  bounds guarantee you find every *existing* key. For a **non-existent** key, a
-  non-monotone model can return the wrong upper/lower bound. Range queries need
-  `lower_bound`, not just point lookup. Fix: detect that the found bound sits on the
-  boundary of the search area and incrementally widen.
-* **Expect a negative result and report it.** The paper states plainly that on integer
-  datasets, hybrid models and non-binary search "did not provide significant benefit" —
-  the gains show up on strings. Reproducing the null result *is* success. Do not tune
-  until it wins.
-
-**Agent protocol — Rule 4:**
-
-> "I'm going to explain how our RMI handles `lower_bound` for a key that isn't in the
-> dataset. Ask me one question at a time, hardest first, until you find a case I can't
-> answer. Do not answer for me, do not suggest fixes, do not move on until I've responded."
-
-### Lane B — stage-1 model quality
-
-**Paper:** §3.1, §3.7.1.
-
-* **Work out why a linear stage 1 fails on lognormal.** The log of a lognormal is
-  *normal*, so the CDF in log-space is a sigmoid. A line compresses the sigmoid's dense
-  middle and the stage-2 models landing there inherit enormous key counts. Raising K
-  subdivides the ordinary buckets but barely touches the worst one. Structural, not a bug.
-* **Primary path: multivariate linear regression** with automatic feature engineering over
-  `key, log(key), key², √key` — the paper's Figure-5 "learned index without overhead"
-  configuration, which fits nonlinear patterns in very few operations.
-* *Stretch only if Lane B is ahead:* a small ReLU net for stage 1, trained in PyTorch,
-  weights exported to JSON, forward pass hand-written in C++ — **never call the framework
-  at inference** (§3.1). Cite §2.3's ≈80,000 ns TensorFlow figure as motivation; do not
-  re-measure it.
-* Grid search over (stage-1 feature set, K). Expect to confirm: richer stage 1, strictly
-  **linear** stage 2 — "for the last mile it is often not worthwhile to execute complex
-  models."
-
-**Agent protocol — Rule 3 + Rule 5:**
-
-> "Propose 6 candidate stage-1 model families for an RMI over lognormal keys. One table:
-> family | #params | est. ns/prediction | can it represent a sigmoid (Y/N) | training cost
-> | one-line failure mode. No code. No recommendation. Do not tell me which to pick."
+- *Size accounting.* It is easy for the two of us to have been counting different things.
+  Reconcile now rather than in week 7.
+- *Search primitive parity.* Both structures must use the same branch-free binary search
+  internally, so that no measured difference comes from the search code rather than the
+  index.
 
 ---
 
-## Week 5 — Learned hash ∥ Bloom filter begins · **cut checkpoint**
+### Week 4 — Hybrid indexes and model quality (split)
 
-### Lane A — the hash-model index (§4)
+#### Workstream A: hybrid indexes and range semantics
 
-The cheapest deliverable in the project; it reuses Weeks 2–4 wholesale.
+**Tasks**
 
-* `h(K) = F(K)·M`, F the learned CDF, M = N slots. Paper's config: 2-stage RMI, 100k
-  second-stage models, no hidden layers. Baseline: MurmurHash3-like.
-* Measure conflict rate and slot-occupancy distribution on all three datasets. Target: up
-  to 77% conflict reduction.
-* **Understand when a learned hash is worthless.** On uniform keys a linear model learns
-  the CDF perfectly — and is then no better than any decent randomising hash. The win
-  requires *skew*. Make sure your datasets can show both outcomes; a result that only ever
-  wins is a result you don't understand.
-* **Do fewer conflicts mean faster lookups?** Wire it into a real separate-chaining map and
-  measure end-to-end, model execution included. The paper is explicit that the benefit
-  depends on payload size and conflict policy — for small keys and values, Cuckoo hashing
-  probably wins anyway.
+- Algorithm 1 from the paper: after stage-wise training, replace any last-stage model
+  whose maximum absolute error exceeds a threshold with a B-Tree over its keys.
+  Thresholds 128 and 64.
+- Verify the worst-case guarantee: on deliberately hard data, models are replaced and
+  performance converges on the B-Tree's rather than falling below it.
+- Correct `lower_bound` and `upper_bound` semantics, not only exact-match lookup.
 
-### Lane B — Bloom filter track begins
+**Problems to solve**
 
-Classical Bloom filter (m bits, k hashes, tuned for 1% and 0.1% FPR) **and** the data
-work, which is the part that actually eats time: the paper uses Google's Transparency
-Report (1.7M phishing URLs); use PhishTank / OpenPhish. Build the negative set as *both*
-random valid URLs and whitelisted lookalikes — the paper gets 60% vs 21% savings on those
-two, and that spread *is* the covariate-shift finding.
+- *Monotonicity.* The error bounds guarantee we find every key that exists. For a key
+  that does not exist, a non-monotone model can return the wrong bound, which breaks
+  range queries. §3.4 gives two fixes: force the model monotone, or detect that the
+  found bound sits on the edge of the search window and widen incrementally. We
+  implement the second.
+- *Expecting a negative result.* The paper states that for integer datasets, hybrid
+  models and non-binary search strategies did not provide significant benefit — the
+  gains appear on string keys. If we reproduce that null result, it is a successful
+  reproduction and we report it as one. We will not tune until it wins.
 
-### ⚠ Cut checkpoint — hold it this week, not in Week 8
+#### Workstream B: stage-1 model quality
 
-If either lane is more than one week behind, cut in this order: Figure-5 alternative
-baselines → the NN stretch → §5.1.2 → hybrid indexes. **Never cut:** the B-Tree
-baseline's quality, per-model error bounds, or zero-false-negative verification.
+**Tasks**
 
----
+- Multivariate linear regression over automatically generated features:
+  key, log(key), key², √key
+- Grid search over feature set and K
+- Confirm or refute the paper's finding that a richer first stage helps and a linear
+  second stage is sufficient
+- Stretch: small ReLU network for stage 1, trained in PyTorch, weights exported to JSON,
+  forward pass hand-written in C++
 
-## Week 6 — Figure-5 baselines ∥ the learned Bloom filter
+**Problems to solve**
 
-### Lane A — alternative baselines (§3.7.1, Figure 5)
-
-What separates a reproduction from a demo.
-
-* 3-stage lookup table: every 64th key, padded to a multiple of 64, repeated once more;
-  binary search the top table, then branch-free AVX scan.
-* Fixed-height B-Tree sized to ~1.5 MB (matching your model) + **interpolation search**.
-* Histogram: the paper dismisses it in prose — an accurate CDF needs so many buckets that
-  searching the histogram becomes the problem, and fixing that yields a B-Tree. Reproduce
-  the *argument*, not the code.
-
-### Lane B — the learned Bloom filter (§5.1)
-
-* **Derive the threshold arithmetic yourself.** `FPR_O = FPR_τ + (1 − FPR_τ)·FPR_B`. The
-  paper sets `FPR_τ = FPR_B = p*/2` so `FPR_O ≤ p*`. Work out why that suffices, and what
-  an uneven split would buy.
-* **The zero-false-negative contract.** Build the overflow filter over
-  `K⁻_τ = {x ∈ K : f(x) < τ}` — *every* key the model scores below threshold. Miss one and
-  the structure is unsound. Test over the entire key set, not a sample.
-* **Count the model in the memory budget.** The paper's 16-dim GRU with 32-dim character
-  embeddings is 0.0259 MB and *is* included in its 1.31 MB total against a 2.04 MB Bloom
-  filter. Excluding it would be cheating.
-* **The shape of the trade-off:** tightening τ lowers FPR but raises FNR, and the overflow
-  filter scales with FNR. Paper: 1% FPR → 55% FNR → 36% saving; 0.1% FPR → 76% FNR → 15%.
-  The saving shrinks as you demand accuracy.
-
-**Agent protocol — Rule 1, then Rule 2:**
-
-> "Here is my derivation of τ and my overflow-filter construction [paste]. Attack it in two
-> passes. Pass 1: find a scenario where the structure returns a false negative. Pass 2:
-> find an accounting error that makes my memory saving look better than it is. ≤ 100 words
-> per pass. If you find nothing, say 'nothing found' — do not invent weak objections to
-> seem useful."
-
-That last clause matters: an agent told to attack will manufacture noise unless you
-explicitly permit it to find nothing.
+- *Why a linear stage 1 fails on lognormal.* The logarithm of a lognormal variable is
+  normally distributed, so in log-space the CDF is a sigmoid. A straight line compresses
+  the dense middle of that sigmoid, and the stage-2 models that land there inherit
+  enormous key counts. Increasing K subdivides the ordinary buckets but barely improves
+  the worst one. This is a structural property of the model class, not a bug, and it is
+  why the paper wants something richer than a line at stage 1.
+- *Keeping the grid search affordable.* Each configuration retrains K stage-2 models over
+  100M keys. We sample for the search and only train the finalists at full size.
 
 ---
 
-## Week 7 — Integration and full evaluation *(joint — this is the buffer)*
+### Week 5 — Hash-model index and Bloom filter groundwork (split)
 
-**Ship:** every structure, every dataset, N ∈ {10M, 100M}, one reproducible run.
+**This is the checkpoint week.** If either workstream is more than a week behind, we cut
+here rather than discovering the problem in week 8. Cut order is in section 6.
 
-This week exists to absorb slippage. If both lanes are on time, you get a full evaluation
-sweep and a week of margin on the report. If they are not, this is where you catch up —
-which is why the cut checkpoint is in Week 5 and not here.
+#### Workstream A: the hash-model index (§4)
 
-* One binary, one set of flags, one lookup sample per (dataset, N) group shared by every
-  index in it.
-* Regenerate every CSV from fixed seeds. Any number in the report that cannot be
-  regenerated by a command does not go in the report.
-* Reconcile the two lanes' size accounting — it is very easy for Lane A and Lane B to have
-  been counting different things all along.
+The cheapest deliverable in the project — it reuses the finished RMI directly.
+
+**Tasks**
+
+- Hash function `h(K) = F(K) · M`, with F the learned CDF and M the number of slots
+- MurmurHash3-style baseline, M = N slots, as in the paper
+- Conflict rate and slot-occupancy distribution across all datasets
+- Wire both into a real separate-chaining hash map and measure end-to-end lookup
+
+**Problems to solve**
+
+- *When a learned hash is worthless.* On uniformly distributed keys a linear model learns
+  the CDF almost perfectly, and the resulting hash function is then no better than any
+  decent randomising hash. The benefit requires skew. Our dataset set has to be able to
+  demonstrate both outcomes; a result that always wins is a result we do not understand.
+- *Whether fewer conflicts means faster lookups.* The paper is explicit that this depends
+  on payload size and conflict-resolution policy, and that for small keys and values a
+  traditional hash with Cuckoo hashing will probably do fine. We measure end-to-end,
+  including model execution cost, rather than reporting conflict counts alone.
+
+#### Workstream B: Bloom filter groundwork
+
+**Tasks**
+
+- Classical Bloom filter: m bits, k hash functions, sized for target FPRs of 1% and 0.1%
+- Assemble the dataset
+
+**Problems to solve**
+
+- *Getting the data.* The paper uses Google's Transparency Report, 1.7M blacklisted
+  phishing URLs. We use a public feed such as PhishTank or OpenPhish. The negative set is
+  a research decision rather than a detail — the paper reports 60% savings against random
+  URLs and 21% against whitelisted lookalikes. We build both and report both, since that
+  spread is the covariate-shift result.
 
 ---
 
-## Week 8 — Report *(joint)*
+### Week 6 — Alternative baselines and the learned Bloom filter (split)
 
-* Structure it as **reproduced / diverged / not attempted**. Where your numbers disagree
-  with the paper, the explanation is the contribution — write divergences as findings, not
-  apologies.
-* State the scope honestly: read-only, single-threaded, CPU, no inserts (Appendix D.2), N
-  capped at 100M, public dataset substitutes for Weblogs and Maps.
-* Name what you cut and why. A defended cut reads better than a silent gap.
+#### Workstream A: Figure 5 baselines
 
-**Agent protocol — Rule 2, then Rule 6:**
+These are what separate a reproduction from a demonstration.
 
-> "You are Reviewer 2 on this as a SIGMOD submission. Output exactly: 3 reasons to reject,
-> ranked; 3 claims we have not supported with evidence; 1 experiment whose absence is most
-> damaging. One sentence each. No praise, no summary of our work."
+**Tasks**
 
-> "Full 8-week post-mortem. Four sections, ≤ 6 bullets each, no code: (1) where we used you
-> as an answer machine and it cost us understanding; (2) claims you made that we accepted
-> and shouldn't have; (3) the weeks where solve-first actually changed our result; (4) the
-> 3 prompts that produced the most value, and why."
+- Three-stage lookup table: take every 64th key, pad to a multiple of 64, repeat once
+  more over the resulting array; binary search the top table, then a branch-free AVX scan
+- Fixed-height B-Tree sized to approximately 1.5 MB, matching our model's size, with
+  interpolation search
+- Histogram: the paper dismisses this in prose, arguing that an accurate CDF needs so
+  many buckets that searching the histogram becomes the problem, and that fixing that
+  yields a B-Tree. We reproduce the argument rather than the code.
+
+#### Workstream B: the learned Bloom filter (§5.1)
+
+**Tasks**
+
+- Character-level GRU classifier, 16-dimensional hidden state, 32-dimensional character
+  embedding, sigmoid output, log loss
+- Choose threshold τ on the validation set
+- Build the overflow Bloom filter over the false negatives
+- Memory-versus-FPR curve against the classical filter
+
+**Problems to solve**
+
+- *The threshold arithmetic.* Overall false positive rate is
+  `FPR_O = FPR_τ + (1 − FPR_τ)·FPR_B`. The paper sets both terms to `p*/2` so that
+  `FPR_O ≤ p*`. We derive why that is sufficient, and consider what an uneven split of
+  the budget would buy.
+- *Guaranteeing zero false negatives.* The overflow filter must contain every key the
+  model scores below τ. Missing one makes the whole structure unsound, so we test over
+  the entire key set rather than a sample.
+- *Honest memory accounting.* The model's own parameters count towards the total. The
+  paper's GRU is 0.0259 MB and is included in its 1.31 MB figure against a 2.04 MB
+  classical filter. Excluding it would be cheating.
+- *Understanding the trade-off.* Tightening τ lowers FPR but raises FNR, and the overflow
+  filter grows with FNR. The paper reports 55% FNR and a 36% saving at 1% FPR, but 76%
+  FNR and only 15% saving at 0.1%. The benefit shrinks as accuracy requirements tighten.
 
 ---
 
-## Cut order — decide at the Week 5 checkpoint
+### Week 7 — Integration and full evaluation (joint)
 
-1. Figure-5 alternative baselines (Lane A, Week 6)
-2. The neural-net stretch in Week 4
-3. §5.1.2 model-hash Bloom filters
-4. Hybrid indexes §3.3 — cut last; the worst-case guarantee is one of the paper's best ideas
+This week is deliberately light on new work, so that it can absorb slippage from earlier
+weeks. If we are on schedule, we get a complete evaluation sweep and a week of margin on
+the report.
 
-**Never cut:** the quality of the B-Tree baseline, per-model error bounds, or the
-zero-false-negative verification.
+**Tasks**
 
-**Already cut, for the record:** TensorFlow slowness demo · FAST · string keys §3.5 ·
-N=200M runs.
+- Full run: every structure, every dataset, N ∈ {10M, 100M}
+- Regenerate every CSV from fixed seeds
+- Reconcile size accounting across both workstreams one final time
+- Produce all report figures directly from the CSVs
 
-## Standing invariants
+**Problems to solve**
 
-1. **Zero false negatives is a hard failure**, every week, for every structure — never
-   a warning.
-2. Every learned-vs-classical number comes from the same binary, the same flags, and
-   the same lookup sample.
-3. Training/build time is never inside a timed loop; report it separately.
-4. Fixed seeds everywhere.
-5. Compile with `-ffp-contract=off`.
+- *Reproducibility.* Any number that cannot be regenerated by a single command does not
+  go in the report. No figure is transcribed by hand.
 
-## Verification
+---
 
-* **Per structure:** all N keys found at their exact position; ≥1000 sampled absent keys
-  correctly report not-found; both run *before* any timing, aborting the run on failure.
-* **RMI-specific:** mean error width shrinks monotonically as K grows; on `dense` the fit
-  is exact (max error width 0); no single stage-2 model holds >50% of the keys.
-* **Bloom filter:** FNR measured over the *entire* key set is exactly 0.
-* **Hash index:** conflict count reconciles with the slot-occupancy histogram.
-* **End-to-end:** `make && ./benchmark` reproduces every CSV in the repo from fixed
-  seeds; the report's tables are generated from those CSVs, never transcribed by hand.
+### Week 8 — Report (joint)
+
+**Tasks**
+
+- Write up, structured as: reproduced / diverged / not attempted
+- Document the scope limits from section 2 explicitly
+- Explain each cut we made and why
+
+**Problems to solve**
+
+- *Writing divergences as findings.* Where our numbers disagree with the paper's, the
+  explanation is the interesting part. Hardware differs, dataset substitutes differ, and
+  our implementation is not theirs. A well-argued divergence is a better outcome than a
+  number that happens to match.
+
+---
+
+## 6. Risks and contingency
+
+The main risk is that weeks 2 and 4 overrun — the B-Tree layout and the range-query
+semantics are both easy to underestimate. The week 7 buffer exists for this.
+
+If we fall behind, we cut in this order, decided at the week 5 checkpoint:
+
+1. Figure 5 alternative baselines
+2. The neural network stretch goal in week 4
+3. Hybrid indexes (§3.3) — cut last, because the worst-case guarantee is one of the
+   paper's better ideas and it is cheap once both structures exist
+
+We will not cut, under any circumstances: the quality of the B-Tree baseline, the
+per-model error bounds, or the zero-false-negative verification. Those three are what
+make the project a reproduction rather than a demonstration.
+
+---
+
+## 7. Correctness requirements
+
+Checked before any timing run, on every structure, with the run aborting on failure:
+
+- Every key in the dataset is found at its exact position — zero false negatives
+- At least 1000 keys known to be absent all report not-found
+- On `dense`, the RMI fit is exact and the search window is a single slot
+- Mean error width decreases monotonically as K increases
+- No single stage-2 model owns more than 50% of the keys
+- For the Bloom filter, false negative rate measured over the entire key set is exactly zero
+- For the hash index, conflict counts reconcile with the slot-occupancy histogram
+
+---
+
+## References
+
+- T. Kraska, A. Beutel, E. H. Chi, J. Dean, N. Polyzotis. *The Case for Learned Index
+  Structures.* SIGMOD 2018.
+- R. Marcus et al. *SOSD: A Benchmark for Learned Indexes.* NeurIPS Workshop on ML for
+  Systems, 2019. — source of the `wiki_ts` and `osm_cellids` datasets.
+- C. Kim et al. *FAST: Fast Architecture Sensitive Tree Search on Modern CPUs and GPUs.*
+  SIGMOD 2010. — referenced as a baseline in the paper; not implemented here.
