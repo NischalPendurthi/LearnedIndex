@@ -147,7 +147,27 @@ B-Tree with page size 128 — the paper's reference point.
 
 ---
 
-## 5. Roadmap
+## 5. Setup and external dependencies
+
+These need to be sorted before or during week 1. Two of them have lead time, so they
+are listed separately from the weekly tasks.
+
+| Item | Needed by | Notes |
+|---|---|---|
+| C++17 toolchain (g++ 11+ or clang 14+) | Week 1 | Must support `-march=native` and `-ffp-contract=off` |
+| A machine with at least 16 GB RAM | Week 2 | 100M keys plus 64-bit payloads is ~1.6 GB, but training and verification need headroom |
+| CPU with AVX2 | Week 6 | Only for the branch-free scan in the lookup-table baseline; check early so we know whether that item is even possible |
+| SOSD datasets (`wiki_ts`, `osm_cellids`) | Week 1 | Several GB of downloads. Start this in week 1, not week 2 |
+| Python 3 with NumPy | Week 4 | For fitting and checking the multivariate regression |
+| PyTorch | Week 4 (stretch), Week 6 | Only needed for the neural network stretch goal and the GRU classifier |
+| **PhishTank or OpenPhish access** | Week 5 | **Register in week 1.** Access is not always instant, and a delay here stalls the whole Bloom filter workstream |
+
+The last row is the one that has actually bitten people before. We apply for the feed in
+week 1 even though we do not use it until week 5.
+
+---
+
+## 6. Roadmap
 
 The B-Tree, the RMI and the Bloom filter do not depend on each other. Only the hash
 index (§4) genuinely needs a finished RMI. We therefore split into two workstreams after
@@ -175,6 +195,17 @@ only understands half the project.
 Nothing is learned this week. We are building the instrument that every later number is
 measured with, and both of us need to own it because it is the interface the two
 workstreams meet at.
+
+**What this week solves.** We cannot compare an RMI against a B-Tree until we have a
+way to measure both fairly and check that both are correct. This week produces that,
+and fixes the interfaces the two workstreams will meet at in week 7.
+
+**Prerequisites**
+
+- C++17 toolchain installed and verified with `-march=native -ffp-contract=off`
+- SOSD downloads started (they are large; begin on day one)
+- PhishTank / OpenPhish access requested — not needed until week 5, but the delay is
+  outside our control
 
 **Tasks**
 
@@ -208,6 +239,14 @@ Every result in the paper is a ratio against a B-Tree with page size 128. If our
 baseline is weak, our speedups are meaningless. We build it as though we were trying to
 beat the RMI with it.
 
+**What this week solves.** Establishes the reference point. Without a credible B-Tree,
+no speedup number we report later means anything.
+
+**Prerequisites**
+
+- Week 1 harness, datasets and correctness oracle finished and agreed by both of us
+- Branch-free binary search primitive available (shared with workstream B)
+
 **Tasks**
 
 - Read-only, 100% fill factor, built bottom-up over the sorted array
@@ -233,6 +272,16 @@ beat the RMI with it.
   expensive a stage-1 model they can afford.
 
 #### Workstream B: the RMI
+
+**What this week solves.** Builds the structure the whole project is about, and
+establishes the property that makes it an index rather than an approximation: bounded
+search windows that guarantee 100% recall.
+
+**Prerequisites**
+
+- Week 1 harness, datasets and correctness oracle finished
+- The sign convention for error bounds derived on paper *before* coding begins
+- Branch-free binary search primitive (shared with workstream A)
 
 **Tasks**
 
@@ -273,6 +322,14 @@ Each of us spends the first two sessions attacking the structure the other one b
 before we trust any number either of us produced. Then we integrate and produce the
 first real RMI-versus-B-Tree comparison table.
 
+**What this week solves.** Produces the paper's headline comparison, and catches the
+mistakes each of us made in isolation before they propagate into five more weeks of work.
+
+**Prerequisites**
+
+- Both week 2 structures pass the full correctness oracle independently
+- Both report size in bytes using the same accounting convention
+
 **Tasks**
 
 - Cross-review both structures
@@ -297,6 +354,16 @@ first real RMI-versus-B-Tree comparison table.
 
 #### Workstream A: hybrid indexes and range semantics
 
+**What this week solves.** Two things the RMI cannot yet do: bound its own worst case,
+and answer range queries correctly. Until `lower_bound` works for absent keys, we have a
+point-lookup structure, not an index.
+
+**Prerequisites**
+
+- Working B-Tree from week 2 (it becomes the fallback structure)
+- Working RMI from week 2, with per-model error bounds exposed
+- Search strategies from week 3
+
 **Tasks**
 
 - Algorithm 1 from the paper: after stage-wise training, replace any last-stage model
@@ -319,6 +386,16 @@ first real RMI-versus-B-Tree comparison table.
   reproduction and we report it as one. We will not tune until it wins.
 
 #### Workstream B: stage-1 model quality
+
+**What this week solves.** A linear stage 1 does badly on lognormal data. This week
+finds out how much of that is recoverable with a better first-stage model, which is the
+one place in §3 where model choice actually changes the result.
+
+**Prerequisites**
+
+- Working RMI from week 2 with a pluggable stage-1 model
+- Python 3 with NumPy for fitting and cross-checking the regression
+- PyTorch only if we attempt the neural network stretch goal
 
 **Tasks**
 
@@ -346,11 +423,19 @@ first real RMI-versus-B-Tree comparison table.
 ### Week 5 — Hash-model index and Bloom filter groundwork (split)
 
 **This is the checkpoint week.** If either workstream is more than a week behind, we cut
-here rather than discovering the problem in week 8. Cut order is in section 6.
+here rather than discovering the problem in week 8. Cut order is in section 7.
 
 #### Workstream A: the hash-model index (§4)
 
 The cheapest deliverable in the project — it reuses the finished RMI directly.
+
+**What this week solves.** Tests whether the CDF idea generalises past range indexes —
+the paper's claim is that the same learned model makes a better hash function.
+
+**Prerequisites**
+
+- Trained RMI exposed through the model interface fixed in week 1
+- Ideally the improved stage-1 models from week 4, though week 2's RMI is enough to start
 
 **Tasks**
 
@@ -371,6 +456,15 @@ The cheapest deliverable in the project — it reuses the finished RMI directly.
   including model execution cost, rather than reporting conflict counts alone.
 
 #### Workstream B: Bloom filter groundwork
+
+**What this week solves.** Builds the baseline and assembles the data, so that week 6 is
+spent on the learned filter rather than on data cleaning.
+
+**Prerequisites**
+
+- PhishTank / OpenPhish access granted (requested back in week 1)
+- A whitelist source for the negative set, plus a random-URL generator
+- Python environment ready for week 6
 
 **Tasks**
 
@@ -393,6 +487,16 @@ The cheapest deliverable in the project — it reuses the finished RMI directly.
 
 These are what separate a reproduction from a demonstration.
 
+**What this week solves.** A B-Tree is not the only competitor. These baselines test
+whether the RMI's advantage survives against structures that are also tuned for
+read-only lookup.
+
+**Prerequisites**
+
+- Week 2 B-Tree, for the fixed-height variant
+- Confirmed AVX2 support on the test machine
+- Model size from week 4, so the fixed-height B-Tree can be sized to match it
+
 **Tasks**
 
 - Three-stage lookup table: take every 64th key, pad to a multiple of 64, repeat once
@@ -404,6 +508,16 @@ These are what separate a reproduction from a demonstration.
   yields a B-Tree. We reproduce the argument rather than the code.
 
 #### Workstream B: the learned Bloom filter (§5.1)
+
+**What this week solves.** The third index family. Unlike the previous two this is a
+classification problem, not a CDF-fitting one, and it is the only part of the project
+where the learned structure needs a classical structure alongside it to stay correct.
+
+**Prerequisites**
+
+- Classical Bloom filter and both negative sets from week 5
+- PyTorch installed and a GPU or patience
+- The τ derivation done on paper before the filter is built
 
 **Tasks**
 
@@ -437,6 +551,15 @@ This week is deliberately light on new work, so that it can absorb slippage from
 weeks. If we are on schedule, we get a complete evaluation sweep and a week of margin on
 the report.
 
+**What this week solves.** Turns two workstreams' worth of separate results into one
+reproducible set of numbers that the report can be written from.
+
+**Prerequisites**
+
+- Every structure passes its correctness requirements from section 8
+- Both workstreams merged into a single binary with one build configuration
+- Size accounting reconciled
+
 **Tasks**
 
 - Full run: every structure, every dataset, N ∈ {10M, 100M}
@@ -453,6 +576,14 @@ the report.
 
 ### Week 8 — Report (joint)
 
+**What this week solves.** Says what we found, including where we disagree with the
+paper and where we ran out of time.
+
+**Prerequisites**
+
+- Complete result set from week 7, regenerable from fixed seeds
+- All figures generated from CSVs, none transcribed by hand
+
 **Tasks**
 
 - Write up, structured as: reproduced / diverged / not attempted
@@ -468,7 +599,7 @@ the report.
 
 ---
 
-## 6. Risks and contingency
+## 7. Risks and contingency
 
 The main risk is that weeks 2 and 4 overrun — the B-Tree layout and the range-query
 semantics are both easy to underestimate. The week 7 buffer exists for this.
@@ -486,7 +617,7 @@ make the project a reproduction rather than a demonstration.
 
 ---
 
-## 7. Correctness requirements
+## 8. Correctness requirements
 
 Checked before any timing run, on every structure, with the run aborting on failure:
 
