@@ -146,11 +146,11 @@ graph TD
   R4 --> R6
   R8 --> R9
 
-  linkStyle 0,1,3,5 stroke-width:4px,fill:none,stroke:red;
-  style R2 fill:#ff9999,stroke:#f00,stroke-width:2px;
-  style R3 fill:#ff9999,stroke:#f00,stroke-width:2px;
-  style R4 fill:#ff9999,stroke:#f00,stroke-width:2px;
-  style R6 fill:#ff9999,stroke:#f00,stroke-width:2px;
+  linkStyle 0,1,3,5 stroke-width:4px,fill:none,stroke:#163a5c;
+  style R2 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
+  style R3 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
+  style R4 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
+  style R6 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
 ```
 
 ### 2.2 Software component dependency DAG
@@ -193,8 +193,8 @@ graph TD
   linkStyle 1,2 stroke:green,stroke-width:3px;
   linkStyle 4,5 stroke:green,stroke-width:3px;
 
-  style S3 fill:#ff9999,stroke:#f00,stroke-width:2px;
-  style S4 fill:#ff9999,stroke:#f00,stroke-width:2px;
+  style S3 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
+  style S4 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
 ```
 
 ### 2.3 Experiment dependency DAG
@@ -236,7 +236,7 @@ graph LR
   E6_Run --> Fig10[Result: Figure 10 memory footprint]
   end
 
-  linkStyle 4,5 stroke-width:4px,fill:none,stroke:red;
+  linkStyle 4,5 stroke-width:4px,fill:none,stroke:#163a5c;
 ```
 
 ### Dependency gates
