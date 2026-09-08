@@ -117,11 +117,14 @@ The project has three dependency layers:
 
 The diagrams below are the working dependency contract for the team. An arrow means the
 downstream item should not be treated as complete until the upstream item is stable.
+Dark-blue blocks with white text are the parts we must build and verify most carefully:
+the conceptual spine, shared runtime foundation, and E1 reproduction gate. Uncolored
+blocks are still required, but they are supporting inputs, alternatives, or outputs.
 
 ### 2.1 Research conceptual dependency DAG
 
-This is the conceptual spine of the paper. Red nodes and links mark the ideas that must
-be understood before the implementation can be interpreted correctly.
+This is the conceptual spine of the paper. Dark-blue nodes and links mark the ideas that
+must be understood before the implementation can be interpreted correctly.
 
 ```mermaid
 graph TD
@@ -146,11 +149,11 @@ graph TD
   R4 --> R6
   R8 --> R9
 
-  linkStyle 0,1,3,5 stroke-width:4px,fill:none,stroke:#163a5c;
-  style R2 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
-  style R3 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
-  style R4 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
-  style R6 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
+  linkStyle 0,1,3,5 stroke-width:4px,fill:none,stroke:darkblue;
+  style R2 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
+  style R3 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
+  style R4 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
+  style R6 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
 ```
 
 ### 2.2 Software component dependency DAG
@@ -193,8 +196,10 @@ graph TD
   linkStyle 1,2 stroke:green,stroke-width:3px;
   linkStyle 4,5 stroke:green,stroke-width:3px;
 
-  style S3 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
-  style S4 fill:#d9e8f5,stroke:#163a5c,stroke-width:2px;
+  style S1 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
+  style S3 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
+  style S4 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
+  style S6 fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
 ```
 
 ### 2.3 Experiment dependency DAG
@@ -236,7 +241,9 @@ graph LR
   E6_Run --> Fig10[Result: Figure 10 memory footprint]
   end
 
-  linkStyle 4,5 stroke-width:4px,fill:none,stroke:#163a5c;
+  linkStyle 4,5 stroke-width:4px,fill:none,stroke:darkblue;
+  style E1_Config fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
+  style E1_Run fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
 ```
 
 ### Dependency gates
@@ -309,13 +316,13 @@ B-Tree with page size 128 — the paper's reference point.
 These need to be sorted before or during week 1. Two of them have lead time, so they
 are listed separately from the weekly tasks.
 
-| Item                                     | Needed by                | Notes                                                                                                                 |
-| ---------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| C++17 toolchain (g++ 11+ or clang 14+)   | Week 1                   | Must support `-march=native` and `-ffp-contract=off`                                                                  |
-| A machine with at least 16 GB RAM        | Week 2                   | 100M keys plus 64-bit payloads is ~1.6 GB, but training and verification need headroom                                |
-| CPU with AVX2                            | Week 6                   | Only for the branch-free scan in the lookup-table baseline; check early so we know whether that item is even possible |
-| SOSD datasets (`wiki_ts`, `osm_cellids`) | Week 1                   | Several GB of downloads. Start this in week 1, not week 2                                                             |
-| **PhishTank or OpenPhish access**        | Week 5                   | **Register in week 1.** Access is not always instant, and a delay here stalls the whole Bloom filter workstream       |
+| Item                                     | Needed by | Notes                                                                                                                 |
+| ---------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------- |
+| C++17 toolchain (g++ 11+ or clang 14+)   | Week 1    | Must support `-march=native` and `-ffp-contract=off`                                                                  |
+| A machine with at least 16 GB RAM        | Week 2    | 100M keys plus 64-bit payloads is ~1.6 GB, but training and verification need headroom                                |
+| CPU with AVX2                            | Week 6    | Only for the branch-free scan in the lookup-table baseline; check early so we know whether that item is even possible |
+| SOSD datasets (`wiki_ts`, `osm_cellids`) | Week 1    | Several GB of downloads. Start this in week 1, not week 2                                                             |
+| **PhishTank or OpenPhish access**        | Week 5    | **Register in week 1.** Access is not always instant, and a delay here stalls the whole Bloom filter workstream       |
 
 There is deliberately no Python or ML-framework row in this table — nothing in the
 project depends on one. The multivariate regression is fit with closed-form normal
