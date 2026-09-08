@@ -246,6 +246,13 @@ graph LR
   style E1_Run fill:darkblue,stroke:darkblue,color:white,stroke-width:2px;
 ```
 
+`RAW_STR`, `DP_STR`, `E3_Run` and `Fig6` (string range-index reproduction) are drawn in
+the diagram because they are a legitimate downstream consumer of `T4` on the dependency
+graph, but they are **not scheduled in any week below** — string keys are explicitly out
+of scope per section 2's exclusion table. They are left in the diagram so that if a
+future extension picks this project back up, the entry point (`T4`, the validated
+integer RMI) is already marked.
+
 ### Dependency gates
 
 The diagrams imply four concrete gates in the schedule:
@@ -416,10 +423,24 @@ and fixes the interfaces the two workstreams will meet at in week 7.
 
 - Repository, build system, a `make` target that produces one benchmark binary
 - Dataset generation for all four datasets; SOSD loader
+  ↳ **[Block S1 — Data ingestion and sort]** *Function:* load raw keys, dedupe, sort,
+  materialise the on-disk key/payload arrays every other block reads. *In:* raw
+  SOSD/synthetic files. *Out:* sorted 64-bit key array + 64-bit payload array, shared by
+  every structure. *Depends on:* nothing upstream — this is the root of the software DAG.
 - Timing harness implementing section 4 above
+  ↳ **[Block EXP — Experiment runner]** *Function:* drives a fixed lookup sample against
+  whichever structure is registered, applies warm-up/repetition/median rules from
+  section 4. *In:* a structure satisfying the `model_interface.h` contract (S6), or a
+  baseline (S7). *Out:* CSV rows in the section-4 column set. *Depends on:* S1 (data),
+  S6 and S7 (the things it measures) — only a stub exists this week since nothing is
+  registered with it yet.
 - Correctness oracle: every key found at its exact position, sampled absent keys
   correctly report not-found, run aborts on failure
 - Plain binary search and `std::lower_bound` as trivial baselines
+  ↳ **[Block S7 — Baselines, partial]** *Function:* reference structures every learned
+  structure must beat. *In:* S1's sorted array. *Out:* a lookup function conforming to
+  S6. *Depends on:* S1. Only the trivial baselines land this week; the B-Tree half of
+  S7 is week 2.
 - CSV output with the column set listed in section 4
 
 **Problems to solve**
@@ -427,10 +448,18 @@ and fixes the interfaces the two workstreams will meet at in week 7.
 - _Interface design._ Week 5 needs the RMI as a hash function and week 6 needs a model
   as a classifier. We have to decide now how a trained CDF model is exposed, so that
   neither workstream blocks the other and week 5 is not a rewrite.
+  ↳ This is where **[Block S6 — Search engine interface]** gets frozen: `predict(key) ->
+  position`, `min_err`, `max_err`, parameter count, and the S3 (de)serialization format.
+  *In:* a fitted model (any S2 output). *Out:* the contract every downstream block (S4,
+  S5, S8, S9, EXP) is written against. *Depends on:* S3's binary format existing in
+  outline, even before S2 has anything to serialize.
 - _Throughput or latency._ We have to pick one and justify it, since they are different
   numbers and the choice is not reversible without redoing everything.
 - _Dataset substitution._ Confirm that `wiki_ts` and `osm_cellids` really do have the CDF
-  characteristics we are claiming they have, rather than assuming it.
+  characteristics we are claiming they have, rather than assuming it. This is the
+  concrete check behind **[Blocks R2/R3 — indexes as models / range indexes as CDFs]**
+  from the research DAG: before S2 can fit anything, we need to have actually looked at
+  the empirical CDF F̂ₙ(x) these datasets produce (§2.2, §2.3 of the paper).
 - _Memory budget._ Check that 100M keys plus payload fits comfortably before week 2,
   not during it.
 
@@ -455,6 +484,11 @@ no speedup number we report later means anything.
 **Tasks**
 
 - Read-only, 100% fill factor, built bottom-up over the sorted array
+  ↳ **[Block S7 — Baselines, B-Tree half]** *Function:* the reference-point structure
+  every RMI speedup/size ratio in the report is computed against. *In:* S1's sorted key
+  array. *Out:* a lookup function conforming to S6, plus a size-in-bytes figure using the
+  same accounting convention workstream B uses for the RMI. *Depends on:* S1. This same
+  structure is reused in week 4 as the fallback body of **S5**.
 - Leaf level is the sorted array itself, no copy; the array is excluded from both
   structures' reported size
 - One 64-byte-aligned dense key array per internal level
@@ -491,8 +525,22 @@ search windows that guarantee 100% recall.
 **Tasks**
 
 - Two-stage RMI, K ∈ {10k, 50k, 100k, 200k} stage-2 models (the paper's values)
+  ↳ **[Block R4 — Recursive Model Index]** / **[Block S4 — RMI inference engine]**
+  *Function:* hierarchy of models where stage 1 picks a stage-2 model and that model
+  predicts position directly, no search between stages. *In:* a key (at inference) or
+  S1's sorted array (at fit time). *Out:* position estimate. *Depends on:* R3
+  (conceptually — this is the mechanism that actually fits the CDF) and, in software
+  terms, on S2/S3 for the parameters it executes against.
 - Closed-form least squares, single pass over the sorted data — no gradient descent
+  ↳ **[Block S2 — Model fitting]** *Function:* fits stage-1 and stage-2 parameters from
+  the sorted data via normal equations. *In:* S1's key/position pairs. *Out:* raw model
+  parameters (slope/intercept per model this week). *Depends on:* S1 only — nothing in
+  this project depends on a training framework.
 - Per-model minimum and maximum error, computed at build time
+  ↳ Serialized by **[Block S3 — Model parameter serialization]**: takes S2's output plus
+  the per-model error bounds and writes the C++ binary format S6 specifies, so the
+  benchmark runner (EXP) can reload a model without refitting it. *Depends on:* S2, S6's
+  frozen contract.
 - Bounded search within the error window
 - 100% recall verified at every configuration
 
@@ -539,10 +587,24 @@ mistakes each of us made in isolation before they propagate into five more weeks
 
 - Cross-review both structures
 - Integrate into one benchmark binary with a shared lookup sample
+  ↳ Completes **[Block S6 — Search engine interface]**: both S4 (RMI) and S7 (B-Tree)
+  now sit behind the same `predict`/`lookup` contract frozen in week 1, and
+  **[Block EXP — Experiment runner]** stops being a stub and actually drives both.
 - First speedup and size-ratio table
+  ↳ **[Blocks E1_Config / E1_Run → T4, Table5]** *Function:* the reproducibility gate
+  (G3). E1_Config fixes which datasets/N/K/page-sizes are compared; E1_Run executes EXP
+  over that configuration. *In:* DP_INT (prepared integer datasets, itself fed by
+  S1). *Out:* T4/Fig4-equivalent and Table5-equivalent CSVs. *Depends on:* S4, S6, S7 all
+  being wired together — this week is the earliest point that dependency is satisfied.
+  This first table is a rough pass; the authoritative version is regenerated in week 7.
 - Workstream A: implement model-biased binary search (first midpoint is the predicted
   position), exponential search (needs no stored bounds), and biased quaternary search
   (initial probes at `pos − σ`, `pos`, `pos + σ`, so the hardware prefetches all three)
+  ↳ **[Block R6 — Biased search strategies]** *Function:* use the model's own error
+  window to bias where the search starts, rather than always splitting the array in
+  half. *In:* the RMI's prediction plus min/max error from S4. *Out:* the corrected
+  position. *Depends on:* R4 (there is nothing to bias search around without a model
+  prediction) and, in code, S4's per-model bounds.
 - Workstream B: begin stage-1 model work
 
 **Problems to solve**
@@ -574,9 +636,17 @@ point-lookup structure, not an index.
 - Algorithm 1 from the paper: after stage-wise training, replace any last-stage model
   whose maximum absolute error exceeds a threshold with a B-Tree over its keys.
   Thresholds 128 and 64.
+  ↳ **[Block R5 — Hybrid indexes]** / **[Block S5 — Hybrid fallback / B-Tree logic]**
+  *Function:* bounds RMI worst-case performance by swapping out only the last-stage
+  models that fit badly. *In:* S4's per-model max error, plus S7's B-Tree as the fallback
+  body. *Out:* a mixed index — some slots are still linear models, some are small
+  B-Trees — that still conforms to S6. *Depends on:* R4/S4 (something to threshold) and
+  S7 (the fallback structure being reused from week 2).
 - Verify the worst-case guarantee: on deliberately hard data, models are replaced and
   performance converges on the B-Tree's rather than falling below it.
 - Correct `lower_bound` and `upper_bound` semantics, not only exact-match lookup.
+  ↳ Extends **[Block S6]**'s contract with range-query semantics, which E1_Run and every
+  later experiment assume are correct.
 
 **Problems to solve**
 
@@ -606,6 +676,9 @@ one place in §3 where model choice actually changes the result.
 - Multivariate linear regression over automatically generated features:
   key, log(key), key², √key — closed-form, same `long double`-accumulator approach as
   week 2, just with a small feature matrix instead of a single scalar
+  ↳ Extends **[Block S2 — Model fitting]**: same normal-equations machinery from week 2,
+  now fitting a feature vector instead of a scalar key. *Out:* stage-1 parameters that
+  still serialize through the unchanged S3 format.
 - Grid search over feature set and K
 - Confirm or refute the paper's finding that a richer first stage helps and a linear
   second stage is sufficient
@@ -613,10 +686,16 @@ one place in §3 where model choice actually changes the result.
   SGD training loop, both in C++, no autodiff library. This is the first hand-rolled
   gradient-based training in the project, so budget real time for it, not "afternoon"
   time; it is the piece most likely to get cut per section 7.
+  ↳ Still an **S2** implementation — same interface out (parameters for S3), different
+  fitting procedure in.
 
 **Problems to solve**
 
-- _Why a linear stage 1 fails on lognormal._ The logarithm of a lognormal variable is
+- _Why a linear stage 1 fails on lognormal._ Directly tests **[Block R7 — O(√N)
+  scalability claim]** from the research DAG: R7 is a statement about how model error
+  scales with N for a model that fits the CDF well, and this is the case where the model
+  does not fit it well, so the claim's precondition fails visibly rather than
+  abstractly. The logarithm of a lognormal variable is
   normally distributed, so in log-space the CDF is a sigmoid. A straight line compresses
   the dense middle of that sigmoid, and the stage-2 models that land there inherit
   enormous key counts. Increasing K subdivides the ordinary buckets but barely improves
@@ -647,9 +726,20 @@ the paper's claim is that the same learned model makes a better hash function.
 **Tasks**
 
 - Hash function `h(K) = F(K) · M`, with F the learned CDF and M the number of slots
+  ↳ **[Block R8 — Hash-model index]** *Function:* reuses the RMI's fitted CDF as a hash
+  function instead of a position predictor. *In:* the trained RMI from S4 (via S6's
+  interface — this is exactly why that interface was fixed in week 1). *Out:* a slot
+  index `h(K)`. *Depends on:* R3 (CDF interpretation) and S4/S6 directly.
 - MurmurHash3-style baseline, M = N slots, as in the paper
+  ↳ **[Block E4_Run — Hash conflict-rate experiment]** *In:* DP_INT, R8's hash function,
+  the MurmurHash3 baseline. *Out:* conflict counts feeding Fig8-equivalent CSVs.
 - Conflict rate and slot-occupancy distribution across all datasets
 - Wire both into a real separate-chaining hash map and measure end-to-end lookup
+  ↳ **[Block R9 — Separate-chaining learned hash map]** / **[Block S8 — Learned chained
+  hash map]** *Function:* the actual data structure, not just the hash function in
+  isolation. *In:* R8's hash function, S1's records. *Out:* end-to-end lookup latency and
+  memory footprint, i.e. **[Block E5_Run → Fig11]**. *Depends on:* R8/S4 for the hash
+  function and S1 for the records being stored.
 
 **Problems to solve**
 
@@ -677,7 +767,14 @@ spent on the learned filter rather than on data cleaning.
 **Tasks**
 
 - Classical Bloom filter: m bits, k hash functions, sized for target FPRs of 1% and 0.1%
+  ↳ Not itself a node in the software DAG, but this is the fixed baseline **[Block
+  R10 — Learned Bloom filters]** and **[Block S9]** get measured against in week 6; it
+  has to be correct and stable before either exists.
 - Assemble the dataset
+  ↳ **[Block DP_URL — Process URLs]** *In:* raw PhishTank/OpenPhish feed plus the
+  whitelist/random negative sources. *Out:* the key set (K) and non-key set (U) that
+  **[Block E6_Run]** consumes in week 6. *Depends on:* PhishTank/OpenPhish access being
+  granted (requested week 1).
 
 **Problems to solve**
 
@@ -709,8 +806,14 @@ read-only lookup.
 
 - Three-stage lookup table: take every 64th key, pad to a multiple of 64, repeat once
   more over the resulting array; binary search the top table, then a branch-free AVX scan
+  ↳ Extends **[Block Table5 — alternative-baseline results]** with the paper's Figure 5
+  competitors. *In:* DP_INT, this week's new baseline structures. *Out:* rows appended to
+  the same Table5 CSV E1_Run produced in week 3, so the report can put the RMI, the
+  B-Tree, and these alternatives side by side.
 - Fixed-height B-Tree sized to approximately 1.5 MB, matching our model's size, with
   interpolation search
+  ↳ Also feeds **Table5**; sized against the model-size figure workstream B produced in
+  week 4.
 - Histogram: the paper dismisses this in prose, arguing that an accurate CDF needs so
   many buckets that searching the histogram becomes the problem, and that fixing that
   yields a B-Tree. We reproduce the argument rather than the code.
@@ -742,13 +845,22 @@ an overflow Bloom filter covering its false negatives.
   by hand-written SGD in C++. This is a linear model over non-linear features, in the
   same spirit as the multivariate stage-1 model in week 4 — deliberately, so the two
   hand-rolled-training efforts in the project share infrastructure and lessons learned.
+  ↳ **[Block R10 — Learned Bloom filters as classification problem]** / **[Block
+  S9 — Learned Bloom filter module]** *Function:* replaces the paper's GRU with an
+  n-gram logistic classifier that predicts key-vs-non-key. *In:* DP_URL's K and U sets.
+  *Out:* a probability per query, thresholded at τ. *Depends on:* R2 (indexes as models
+  — a Bloom filter reframed as a binary classifier) and DP_URL.
 - Choose threshold τ on the validation set
 - Build the overflow Bloom filter over the false negatives
+  ↳ Together with S9's classifier, this pairing is what **[Block E6_Run — Learned Bloom
+  filter experiment]** measures. *In:* S9's model, the classical filter from week 5.
+  *Out:* **[Block Fig10 — memory-footprint result]**.
 - Memory-versus-FPR curve against the classical filter
 - Stretch, only if week 4's NN infrastructure landed cleanly and there is time to spare:
   a small character-level feed-forward net (fixed-width input, no recurrence, so no
   BPTT) as a second classifier to compare against the n-gram model. A full GRU stays out
   of scope — flag it as future work in the report rather than attempting it.
+  ↳ Still slots into **S9** as an alternative classifier behind the same interface.
 
 **Problems to solve**
 
@@ -790,7 +902,12 @@ reproducible set of numbers that the report can be written from.
 **Tasks**
 
 - Full run: every structure, every dataset, N ∈ {10M, 100M}
+  ↳ This is **[Block EXP — Experiment runner]** finally exercised end to end, over every
+  registered structure (S4, S5, S7, S8, S9) at once — the first time all of them run
+  under identical conditions in the same pass.
 - Regenerate every CSV from fixed seeds
+  ↳ Finalises **T4, Table5, Fig11, Fig10** (and Fig6 if the string stretch happened —
+  see the note by the experiment DAG in §2.3). This satisfies gate **G4**.
 - Reconcile size accounting across both workstreams one final time
 - Produce all report figures directly from the CSVs
 
