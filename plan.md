@@ -93,6 +93,151 @@ framework at inference time under any circumstances — §2.3 of the paper measu
 roughly 80,000 ns per prediction against 300 ns for a B-Tree traversal, which is the
 entire reason their code-generation layer exists.
 
+### Project map
+
+The project has three dependency layers:
+
+1. **Research concepts:** understand the CDF interpretation before implementing the RMI,
+   search correction, hash index, or learned Bloom filter.
+2. **Software components:** build one shared data and evaluation foundation, then split
+   into a Python training path and a C++ inference path that meet at exported weights.
+3. **Experiments:** establish the integer range-index reproduction first; only then use
+   its validated outputs to support the string and hash claims. The learned Bloom filter
+   remains a parallel existence-index track.
+
+The diagrams below are the working dependency contract for the team. An arrow means the
+downstream item should not be treated as complete until the upstream item is stable.
+
+### 2.1 Research conceptual dependency DAG
+
+This is the conceptual spine of the paper. Red nodes and links mark the ideas that must
+be understood before the implementation can be interpreted correctly.
+
+```mermaid
+graph TD
+  R1(Problem: Generic indexes assume nothing about data distribution)
+  R2(Insight: Indexes as models - key to position mapping)
+  R3(Insight: Range indexes represent CDFs of key distribution)
+  R4(Method: Recursive Model Index - RMI)
+  R5(Algorithm: Hybrid indexes - B-Tree fallback mechanism)
+  R6(Algorithm: Biased search strategies - model error correction)
+  R7(Claim: O/sqrt N scalability of model error)
+  R8(Method: Hash-model index using learned CDF)
+  R9(App: Separate-chaining learned hash map)
+  R10(Method: Learned Bloom filters as classification problem)
+
+  R1 --> R2
+  R2 --> R3
+  R2 --> R10
+  R3 --> R4
+  R3 --> R7
+  R3 --> R8
+  R4 --> R5
+  R4 --> R6
+  R8 --> R9
+
+  linkStyle 0,1,3,5 stroke-width:4px,fill:none,stroke:red;
+  style R2 fill:#ff9999,stroke:#f00,stroke-width:2px;
+  style R3 fill:#ff9999,stroke:#f00,stroke-width:2px;
+  style R4 fill:#ff9999,stroke:#f00,stroke-width:2px;
+  style R6 fill:#ff9999,stroke:#f00,stroke-width:2px;
+```
+
+### 2.2 Software component dependency DAG
+
+The implementation is deliberately split at the model-export boundary. Python is used
+for training and export; the benchmark and all measured inference run in C++17. Green
+links show the critical parallel path for the two workstreams.
+
+```mermaid
+graph TD
+  subgraph Data_Prep
+  S1(S1: Data ingestion and sort)
+  end
+
+  subgraph Training_Pipeline_Python
+  S1 --> S2(S2: RMI training pipeline - NumPy / PyTorch)
+  S2 --> S3(S3: Model weight exporter)
+  end
+
+  subgraph Runtime_Inference_CPP
+  S1 -. Load sorted data .-> S6(S6: Search engine interface)
+  S3 -- Imported weights --> S4(S4: RMI inference engine - zero overhead)
+  S4 --> S5(S5: Hybrid fallback / B-Tree logic)
+  S5 --> S6
+  end
+
+  subgraph Evaluation
+  S1 --> S7(S7: Baselines - B-Tree / binary search)
+  S6 --> EXP(Experiment runner)
+  S7 --> EXP
+  end
+
+  subgraph Auxiliary_Apps
+  S4 -. Learned hash function .-> S8(S8: Learned chained hash map)
+  S9(S9: Learned Bloom filter module)
+  end
+
+  linkStyle 1,2 stroke:green,stroke-width:3px;
+  linkStyle 4,5 stroke:green,stroke-width:3px;
+
+  style S3 fill:#ff9999,stroke:#f00,stroke-width:2px;
+  style S4 fill:#ff9999,stroke:#f00,stroke-width:2px;
+```
+
+### 2.3 Experiment dependency DAG
+
+`E1` is the reproducibility gate. It must produce a correct integer range-index result
+before the secondary claims are allowed to consume its configuration or conclusions.
+
+```mermaid
+graph LR
+  RAW_INT[Integer datasets: Weblogs / Maps substitutes]
+  RAW_STR[Google Doc-IDs string dataset]
+  RAW_URL[Phishing URL dataset]
+
+  subgraph Prep
+  RAW_INT --> DP_INT[Sort / preprocess]
+  RAW_STR --> DP_STR[Preprocess / tokenize strings]
+  RAW_URL --> DP_URL[Process URLs]
+  end
+
+  subgraph Core_Reproduction
+  DP_INT --> E1_Config[E1: Range-index configuration]
+  E1_Config --> E1_Run[E1: Train / infer / search runner]
+  E1_Run --> T4[Result: Table 4 / Figure 4]
+  E1_Run --> Table5[Result: Table 5 baselines]
+  end
+
+  subgraph Secondary_Claims
+  T4 --> E3_Run[E3: String range-index runner]
+  T4 --> E4_Run[E4: Hash conflict-rate experiment]
+  DP_STR --> E3_Run
+  E3_Run --> Fig6[Result: Figure 6 string speedup]
+  E4_Run --> E5_Run[E5: Learned hash-map runtime]
+  DP_INT --> E5_Run
+  E5_Run --> Fig11[Result: Figure 11 latency / space]
+  end
+
+  subgraph Existence_Indexes
+  DP_URL --> E6_Run[E6: Learned Bloom filter]
+  E6_Run --> Fig10[Result: Figure 10 memory footprint]
+  end
+
+  linkStyle 4,5 stroke-width:4px,fill:none,stroke:red;
+```
+
+### Dependency gates
+
+The diagrams imply four concrete gates in the schedule:
+
+| Gate | Required evidence | Unlocks |
+|---|---|---|
+| G1: foundation | Shared sorted-data format, correctness oracle, timing harness, fixed seeds | All implementation work |
+| G2: exact RMI | Every present key found, absent-key checks pass, error bounds verified | Hybrid indexes, search strategies, hash experiment |
+| G3: E1 reproduction | Integer range-index results regenerated from one command and exported to CSV | String and hash secondary claims |
+| G4: full evaluation | All structures pass correctness and size accounting is reconciled | Figures, report, conclusions |
+
 ---
 
 ## 3. Datasets
